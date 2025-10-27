@@ -70,7 +70,12 @@ def setupLogging():
 
 def checkProcessRunning(exeName: str) -> bool:
     try:
-        result = subprocess.run(['tasklist', '/FI', f'IMAGENAME eq {exeName}'], capture_output=True, text=True, encoding='gbk')
+        result = subprocess.run(
+            ['tasklist', '/FI', f'IMAGENAME eq {exeName}'],
+            capture_output=True,
+            text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW
+        )
         return exeName in result.stdout
     except Exception as e:
         logging.error(f'check process {exeName} failed: {e}')
@@ -95,13 +100,15 @@ def toggleProxyInReg(enable=False, server=None):
     result = subprocess.run(
         ["rundll32.exe", "wininet.dll,InternetSetOptionA", "0", "39", "0", "0"],
         check=True,
-        capture_output=True
+        capture_output=True,
+        creationflags=subprocess.CREATE_NO_WINDOW
     )
     logSubprocessResult(result, 'refresh reg to 39')
     result = subprocess.run(
         ["rundll32.exe", "wininet.dll,InternetSetOptionA", "0", "37", "0", "0"],
         check=True,
-        capture_output=True
+        capture_output=True,
+        creationflags=subprocess.CREATE_NO_WINDOW
     )
     logSubprocessResult(result, 'refresh reg to 37')
 
@@ -159,7 +166,8 @@ def closeProxy(tray: pystray.Icon):
                 ["taskkill", "/F", "/IM", f"{MIHOMO_EXE}*"],
                 check=True,
                 capture_output=True,
-                text=True
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
             )
             logSubprocessResult(result, 'kill mihomo')
             if not checkProcessRunning(MIHOMO_EXE):
