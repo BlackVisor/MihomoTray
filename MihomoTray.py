@@ -9,6 +9,8 @@ import sys
 import webbrowser
 import logging
 from logging.handlers import RotatingFileHandler
+import atexit
+import portalocker
 
 
 # port of system proxy in reg
@@ -19,11 +21,12 @@ WAIT_MIHOMO_START_SECONDS = 3
 CONSOLE_URL = 'http://127.0.0.1:9090/ui/zashboard/#/proxies'
 WORK_DIR = os.path.dirname(os.path.abspath(__file__))
 # config file part
-CONFIG_FILE_NAME = 'config.yaml'
+CONFIG_FILE_NAME = 'config.yml'
 CONFIG_FILE_PATH = os.path.join(WORK_DIR, CONFIG_FILE_NAME)
 # mihomo part
 MIHOMO_EXE = "mihomo.exe"
 MIHOMO_EXE_PATH = os.path.join(WORK_DIR, MIHOMO_EXE)
+LOCK_FILE_PATH = os.path.join(WORK_DIR, 'mihomo.lock')
 
 
 class MihomoIcon(Enum):
@@ -207,7 +210,46 @@ def createTray():
     return icon
 
 
+def singletonLock(lockFilePath: str) -> bool:
+    """
+    实现脚本单实例运行的文件锁
+    :param lockFilePath: 锁文件路径
+    :return: 成功获取锁返回True，否则False
+    """
+    # 检查锁文件是否存在
+    lockFile = None
+    try:
+        # 打开锁文件（不存在则创建），以读写模式打开
+        lockFile = open(lockFilePath, 'w+')
+        # 获取独占锁（非阻塞，获取不到直接报错）
+        portalocker.lock(lockFile, portalocker.LOCK_EX | portalocker.LOCK_NB)
+        # 写入当前进程PID，方便排查
+        lockFile.write(f"{os.getpid()}")
+        lockFile.flush()
+
+        # 注册退出函数，脚本结束时释放锁并删除锁文件
+        def release_lock():
+            if lockFile:
+                portalocker.unlock(lockFile)
+                lockFile.close()
+            # 确保锁文件被删除
+            if os.path.exists(lockFilePath):
+                os.remove(lockFilePath)
+        atexit.register(release_lock)
+        return True
+    except portalocker.exceptions.LockException:
+        # 无法获取锁，说明已有实例运行
+        logging.warning('mihomo tray is already running')
+        return False
+    except Exception as e:
+        logging.error('get lock file failed')
+        return False
+
+
 if __name__ == "__main__":
     setupLogging()
-    tray = createTray()
-    tray.run()
+    if singletonLock(lockFilePath=LOCK_FILE_PATH):
+        tray = createTray()
+        tray.run()
+    else:
+        logging.warning("mihomo is already running, skip")
