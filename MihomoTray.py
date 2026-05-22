@@ -1,9 +1,13 @@
+import json
 import os
 import winreg
 from enum import Enum
 import subprocess
 import time
+from pathlib import Path
+
 import pystray
+import requests
 from PIL import Image
 import sys
 import webbrowser
@@ -12,21 +16,29 @@ from logging.handlers import RotatingFileHandler
 import atexit
 import portalocker
 
+WORK_DIR = Path(__file__).resolve().parent
 
 # port of system proxy in reg
 PROXY_PORT = 7890
+
 # wait below interval for mihomo starting
 WAIT_MIHOMO_START_SECONDS = 3
+
 # url of mihomo console
 CONSOLE_URL = 'http://127.0.0.1:9090/ui/zashboard/#/proxies'
-WORK_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # config file part
-CONFIG_FILE_NAME = 'config.yml'
-CONFIG_FILE_PATH = os.path.join(WORK_DIR, CONFIG_FILE_NAME)
+CONFIG_FILE_PATH = WORK_DIR / 'config.yml'
+
 # mihomo part
 MIHOMO_EXE = "mihomo.exe"
-MIHOMO_EXE_PATH = os.path.join(WORK_DIR, MIHOMO_EXE)
-LOCK_FILE_PATH = os.path.join(WORK_DIR, 'mihomo.lock')
+MIHOMO_EXE_PATH = WORK_DIR / MIHOMO_EXE
+LOCK_FILE_PATH = WORK_DIR / 'mihomo.lock'
+
+# edit custom rule
+MY_DIRECT_RULES_FILE = WORK_DIR / 'rule-providers' / 'my_direct.yml'
+# use notepad++ to edit custom rule
+EDITOR_PATH = Path(r'C:\Software\Notepad++\notepad++.exe')
 
 
 class MihomoIcon(Enum):
@@ -40,7 +52,7 @@ class MihomoIcon(Enum):
     YELLOW = 'tray_yellow.ico'
 
     def getIconImage(self):
-        return Image.open(os.path.join(WORK_DIR, 'asset', self.value))
+        return Image.open(WORK_DIR / 'asset' / self.value)
 
 
 def setupLogging():
@@ -116,14 +128,14 @@ def toggleProxyInReg(enable=False, server=None):
     logSubprocessResult(result, 'refresh reg to 37')
 
 
-def openProxy(tray: pystray.Icon):
+def openProxy(tray: 'pystray.Icon'):
     try:
         # 1.use subprocess to start mihomo
         if not checkProcessRunning(MIHOMO_EXE):
             logging.info('mihomo not found, try to start it')
             # subprocess.run will wait mihomo end, so use Popen here
             subprocess.Popen(
-                f'{MIHOMO_EXE_PATH} -d {WORK_DIR} -f {CONFIG_FILE_PATH}',
+                [str(MIHOMO_EXE_PATH), '-d', str(WORK_DIR), '-f', str(CONFIG_FILE_PATH)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW
@@ -157,7 +169,7 @@ def logSubprocessResult(result: subprocess.CompletedProcess, action: str):
         logging.error(f'error occurred when {action}, error is {result.stderr.strip()}')
 
 
-def closeProxy(tray: pystray.Icon):
+def closeProxy(tray: 'pystray.Icon'):
     try:
         # 1.close system proxy in reg
         toggleProxyInReg(enable=False)
@@ -186,15 +198,54 @@ def closeProxy(tray: pystray.Icon):
         return
 
 
-def openConsole(icon, item):
+def openConsole():
     # click to open console in browser
     webbrowser.open(CONSOLE_URL)
 
 
-def exitTray(tray: pystray.Icon):
+def exitTray(tray: 'pystray.Icon'):
     if checkProcessRunning(MIHOMO_EXE):
         closeProxy(tray)
     tray.stop()
+
+def editRule():
+    if not MY_DIRECT_RULES_FILE.exists():
+        logging.error(f'custom rule file not exists: {MY_DIRECT_RULES_FILE}')
+        return
+    if not EDITOR_PATH.exists():
+        logging.error(f'editor exe not exists: {EDITOR_PATH}')
+        return
+    try:
+        subprocess.Popen(
+                [str(EDITOR_PATH), str(MY_DIRECT_RULES_FILE)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                close_fds=True
+            )
+        logging.info('custom rule file opened with editor')
+    except Exception as e:
+        logging.error(f'open custom rule file editor failed: {e}')
+
+def reloadConfig():
+    if checkProcessRunning(MIHOMO_EXE):
+        try:
+            r = requests.put(
+                'http://127.0.0.1:9090/configs?reload=true',
+                data=json.dumps({"path":"","payload":""}),
+                headers={"Content-Type": "application/json", 'Authorization': 'Bearer 666666'},
+                timeout=3
+            )
+            if r.status_code in range(200, 299):
+                logging.info('reload config done')
+            else:
+                logging.error(f'reload config failed: {r.status_code}')
+        except requests.exceptions.Timeout:
+            logging.error('reload config timeout')
+        except Exception as e:
+            logging.error(f'reload config error: {e}')
+    else:
+        logging.warning('mihomo is not running')
 
 
 def createTray():
@@ -203,6 +254,8 @@ def createTray():
         pystray.MenuItem("开启代理", openProxy),
         pystray.MenuItem("关闭代理", closeProxy),
         pystray.MenuItem("控制台", openConsole),
+        pystray.MenuItem('编辑规则', editRule),
+        pystray.MenuItem('重载配置', reloadConfig),
         pystray.MenuItem("退出", exitTray)
     )
     # create tray
@@ -210,7 +263,7 @@ def createTray():
     return icon
 
 
-def singletonLock(lockFilePath: str) -> bool:
+def singletonLock(lockFilePath: Path) -> bool:
     """
     实现脚本单实例运行的文件锁
     :param lockFilePath: 锁文件路径
@@ -242,14 +295,17 @@ def singletonLock(lockFilePath: str) -> bool:
         logging.warning('mihomo tray is already running')
         return False
     except Exception as e:
-        logging.error('get lock file failed')
+        logging.error(f'error when get lock file: {e}')
         return False
 
 
-if __name__ == "__main__":
+def init():
     setupLogging()
     if singletonLock(lockFilePath=LOCK_FILE_PATH):
         tray = createTray()
         tray.run()
     else:
         logging.warning("mihomo is already running, skip")
+
+if __name__ == "__main__":
+    init()
